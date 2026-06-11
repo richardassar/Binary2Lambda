@@ -1,0 +1,34 @@
+# Binary2Lambda - Rust build.
+#
+# The Rust port is a single dependency-free file; this manifest points Cargo
+# at it so the standard workflow works:
+#
+#   cargo build --release      # -> target/release/lambda_bijection_rs
+#   cargo run --release        # self-test + demo
+#   cargo run --release -- --vectors
+#   cargo test                 # runs the embedded self-test as a unit test
+#
+# The C++ port builds with CMake (../CMakeLists.txt); the Python reference
+# needs no build step.
+
+[package]
+name = "lambda_bijection"
+version = "1.0.0"
+edition = "2021"
+description = "Total bijection between binary strings and closed lambda terms"
+license = "MIT"
+authors = ["Richard Assar"]
+publish = false
+
+[[bin]]
+name = "lambda_bijection_rs"
+path = "lambda_bijection.rs"
+
+[profile.release]
+opt-level = 3
+
+# The self-test validates counts against exhaustive enumeration and runs tens
+# of thousands of big-integer round trips; optimise test builds so `cargo
+# test` stays fast while keeping overflow checks on.
+[profile.test]
+opt-level = 3

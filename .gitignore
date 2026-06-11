@@ -1,0 +1,15 @@
+# Project-generated artifacts only; editor/OS noise belongs in
+# .git/info/exclude, not here.
+__pycache__/
+# compiled binaries, under both the README and in-file build-command names
+cpp/lambda_bijection_cpp
+cpp/lambda_bijection
+rust/lambda_bijection_rs
+rust/lambda_bijection
+*.tmp
+# CMake out-of-source build tree
+build/
+# Cargo build tree (Cargo.lock is tracked, target/ is not)
+rust/target/
+# differential-fuzz scratch (generated blob and output files)
+verify/work/

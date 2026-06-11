@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+jobs:
+  python:
+    name: Python reference
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Bijection self-test
+        run: python3 python/lambda_bijection.py
+      - name: Compression self-test
+        run: python3 python/lambda_compress.py
+
+  cpp:
+    name: C++ (CMake + ctest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: cmake --build build
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+  rust:
+    name: Rust (cargo test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test
+        run: cargo test --manifest-path rust/Cargo.toml
+
+  differential-fuzz:
+    name: Cross-language differential fuzz
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Build C++ binary
+        run: g++ -std=c++17 -O2 -o cpp/lambda_bijection_cpp cpp/lambda_bijection.cpp
+      - name: Build Rust binary
+        run: rustc -O -o rust/lambda_bijection_rs rust/lambda_bijection.rs
+      - name: Decode vectors identical (C++ vs Rust)
+        run: diff <(cpp/lambda_bijection_cpp --vectors) <(rust/lambda_bijection_rs --vectors)
+      - name: Compression bytes identical (C++ vs Rust)
+        run: diff <(cpp/lambda_bijection_cpp --compress-vectors) <(rust/lambda_bijection_rs --compress-vectors)
+      - name: Differential fuzz
+        run: bash verify/run_fuzz.sh 0.3
