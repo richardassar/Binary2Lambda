@@ -28,12 +28,13 @@ of every bit vector is a valid program), exact uniform sampling of closed
 terms, gap-free enumeration, and canonical Gödel-style numbering with
 random access in both directions.
 
-**New here?** Read `python/lambda_bijection.py` first — it is the reference,
-and its module docstring states the full specification; then `Table`,
-`_unrank`, and `_rank`. For a node-by-node trace of both directions through
-one worked size class, run `python3 exploration/jump_table_demo.py`. The
-theory and the design rationale (with literature) are in [NOTES.md](NOTES.md);
-pointers into its sections appear throughout below.
+**New here?** [docs/API.md](docs/API.md) is the programmer reference: how to
+load the library in each language, the full API, and worked examples. The
+theory and design rationale (with literature) are in [NOTES.md](NOTES.md). To
+read the implementation itself, start with `python/lambda_bijection.py` (the
+reference; its module docstring states the full specification), and
+`python3 exploration/jump_table_demo.py` traces both directions through one
+worked size class.
 
 **Glossary.** *de Bruijn index* — a variable named by a number: how many
 λ's out you count to reach its binder (so names are unneeded). *BLC size* —
@@ -91,7 +92,7 @@ exhaustive enumeration, 12,000 round trips, cap semantics in every
 direction, save/load with corruption detection, and error paths). The
 compression layer self-tests with `python3 python/lambda_compress.py`.
 
-### C++ (fastest)
+### C++
 
 CMake (configures the standard level and optimisation flags, runs the tests):
 
@@ -335,7 +336,7 @@ docs/       API.md (programmer reference)
 exploration/ research scripts from the design sessions (jump tables,
             O(1) lookup regime, incremental-extension measurements)
 CMakeLists.txt, rust/Cargo.toml   build files (see Quick start)
-.github/    CI: builds and tests all three implementations
+.github/    CI: builds and tests the Python, C++ and Rust ports
 NOTES.md    theory, complexity, design rationale, literature
 CONTRIBUTING.md   build/test all four ports; the byte-identity invariant
 ```
@@ -349,9 +350,9 @@ See [docs/API.md](docs/API.md) for the full programmer API and
   (sizes ≤ 14, four different caps) in Python, C++ and Rust independently,
   including the open-term contexts (`count(n, m)` for m > 0).
 - 800 decode vectors byte-identical across Python, C++, Rust and WL.
-- Table files byte-identical and cross-loadable between Python, C++, Rust;
-  checksum corruption (a flipped byte, a truncated file, a bad magic) is
-  rejected by every loader.
+- Table files (`.lamtab`) byte-identical and cross-loadable between all four
+  ports (verified Wolfram ↔ Python byte for byte); checksum corruption (a
+  flipped byte, a truncated file, a bad magic) is rejected by every loader.
 - Compression output byte-identical across Python, C++ and Rust on the
   shared vector set; round trips on all exhaustively enumerated small
   terms plus structured and uniform large terms; malformed compressed input

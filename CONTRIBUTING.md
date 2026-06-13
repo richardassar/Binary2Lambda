@@ -2,9 +2,10 @@
 
 This project is four independent implementations of one specification — a
 Python reference, a C++ port, a Rust port and a Wolfram Language port. The
-binding requirement is that they agree: identical decode, encode and compress
-output for every input, and interchangeable table files. A change is correct
-only when every implementation still agrees.
+binding requirement is that they agree: identical decode and encode output,
+identical compression bytes from the three ports that have a compressor, and
+table files all four read and write interchangeably. A change is correct only
+when every implementation still agrees.
 
 ## Building and testing
 

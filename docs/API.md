@@ -405,6 +405,5 @@ Python entry points:
 
 The Rust API reports bad input as `Err(String)`; bad input never panics.
 Debug builds additionally check internal invariants with `debug_assert!`
-(C++: `assert`), e.g. big-integer subtraction never underflows and the
-decoder target always fits in 64 bits; these are compiled out of release
-builds.
+(C++: `assert`) — for example that a big-integer subtraction never underflows;
+these are compiled out of release builds.

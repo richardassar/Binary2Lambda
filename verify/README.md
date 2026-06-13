@@ -17,19 +17,20 @@ OK<TAB><digest><TAB><nodes>
 
 or `ERR`. The digest is a structural FNV-1a-64 over the decoded term,
 computed identically in all three languages, so two outputs are equal exactly
-when the decoded terms are equal. `run_fuzz.sh` feeds one blob file to all
-three and diffs the outputs.
+when the decoded terms are equal. `run_fuzz.sh` runs the compiled C++ and Rust
+decoders over the whole blob set and diffs them, then runs the Python
+reference over a representative subset and checks it agrees there.
 
 Two blob sets:
 
-- **garbage** — every one-byte blob, header bytes spanning the valid and
-  rejected ranges, long constant-fill runs that drive deep interval-narrowing
-  chains, uniform random blobs across many lengths, and truncations of valid
-  blobs. The three decoders must produce byte-identical results (same decoded
-  term or all `ERR`); any difference is a cross-implementation bug.
+- **garbage** — every one-byte blob, two-byte blobs across many leading and
+  trailing bytes, constant-fill runs that drive long decode chains, uniform
+  random blobs across many lengths, and truncations of valid blobs. The
+  decoders must produce byte-identical results (same decoded term or all
+  `ERR`); any difference is a cross-implementation bug.
 - **valid** — `compress` outputs of random and structured terms. Each must
   decode back to the original term (the harness checks the per-term digests
-  against `valid_expected.txt`) and do so identically in all three languages.
+  against `valid_expected.txt`), identically in every language.
 
 This exercises the paths static review cannot: end-of-stream handling, the
 node/depth termination guards, and the 32-bit range-coder arithmetic and byte
@@ -52,4 +53,5 @@ divergence or a round-trip mismatch, with the differing lines printed.
 
 - `fuzz_harness.py` — blob generator (`gen`) and Python reference oracle
   (`run`); defines the shared structural digest.
-- `run_fuzz.sh` — builds the blob files, runs all three decoders, diffs.
+- `run_fuzz.sh` — generates the blob files, runs C++ and Rust over the full
+  set and the Python reference over a subset, and diffs.

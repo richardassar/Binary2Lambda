@@ -134,9 +134,9 @@ Concrete anchors (measured): the uncapped T-table holds 47 MiB of count
 *data* in memory at L=1024 and writes a 43 MiB file (the L³/4-bit
 formula is asymptotic and under-predicts ~30% here); the capped K=32 table
 is 2.2 MiB in memory / 2.1 MiB on disk at L=1024. SPLIT+JUMP ≈ 1 MB at
-L=60. Save and load stream the file through an incremental checksum, so
-peak process RSS stays near the in-memory table size (~80 MB at L=1024
-uncapped) rather than doubling for the file buffer.
+L=60. Save streams the body through an incremental checksum, so writing never
+holds a second copy of the table; load reads the file, verifies the checksum,
+then builds the table.
 
 **Time**
 - Build: Θ(L³) multiplications uncapped, Θ(K·L²) capped; append-only
@@ -431,7 +431,7 @@ found in one source" claims rest on a focused, non-exhaustive sweep.)
 Four self-contained single-file implementations, one specification,
 byte-identical cross-validated output (800 test vectors: 500 unbounded +
 300 capped K=3, identical across Python ≡ C++ ≡ Rust ≡ WL; table files
-byte-identical and cross-loadable between Python, C++ and Rust):
+(`.lamtab`) byte-identical and cross-loadable across all four ports):
 
 Each self-test covers: brute-force counts vs exhaustive BLC enumeration
 (n≤14 × 4 caps, including open contexts m>0), 12,000 round trips, cap change
