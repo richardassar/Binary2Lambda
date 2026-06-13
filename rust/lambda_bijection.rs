@@ -303,12 +303,52 @@ pub fn check_closed(term: &Term, depth: u32) -> Result<(), String> {
 /// body in memory.
 const FNV_OFFSET: u64 = 0xcbf29ce484222325;
 
-fn fnv1a64_update(mut h: u64, data: &str) -> u64 {
-    for byte in data.bytes() {
+fn fnv1a64_update(mut h: u64, data: &[u8]) -> u64 {
+    for &byte in data {
         h ^= byte as u64;
         h = h.wrapping_mul(0x100000001b3);
     }
     h
+}
+
+/// Magic for the portable binary table format (.lamtab); the last byte is the
+/// format version. Shared byte-for-byte with the Python, C++ and Wolfram ports.
+const TABLE_MAGIC: &[u8] = b"LAMTAB\x01";
+
+fn put_u32(out: &mut Vec<u8>, v: u32) {
+    out.extend_from_slice(&v.to_le_bytes());
+}
+fn get_u32(d: &[u8], pos: usize) -> u32 {
+    u32::from_le_bytes([d[pos], d[pos + 1], d[pos + 2], d[pos + 3]])
+}
+fn to_bytes_be(v: &BigNat) -> Vec<u8> {
+    let nbytes = (v.bit_length() + 7) / 8;
+    let mut out = vec![0u8; nbytes];
+    for k in 0..nbytes {
+        // k counts bytes from the least significant
+        let mut byte = 0u8;
+        for j in 0..8 {
+            if v.bit(8 * k + j) {
+                byte |= 1 << j;
+            }
+        }
+        out[nbytes - 1 - k] = byte;
+    }
+    out
+}
+fn from_bytes_be(d: &[u8]) -> BigNat {
+    let mut v = BigNat::default();
+    for &byte in d {
+        for _ in 0..8 {
+            v.shift_left_one();
+        }
+        for b in (0..8).rev() {
+            if (byte >> b) & 1 != 0 {
+                v.set_bit(b);
+            }
+        }
+    }
+    v
 }
 
 /// context: 0 = top level / lambda body, 1 = left of app, 2 = right of app
@@ -458,80 +498,78 @@ impl Table {
         self.extend(target);
     }
 
-    /// Portable text format shared with the Python and C++ implementations
-    /// (identical bytes in every language): a header line, `cap <K|inf>`,
-    /// `size <built>`, one line of space-separated lowercase-hex entries per
-    /// size from 2 upward, then `checksum <hex>` (FNV-1a 64-bit over every
-    /// byte between the header and the checksum line).
+    /// Portable binary format shared with the Python, C++ and Wolfram ports
+    /// (identical bytes in every language): the 7-byte magic LAMTAB\x01, a
+    /// one-byte cap kind (0 unbounded, 1 finite) and 4-byte little-endian cap
+    /// value, the 4-byte little-endian built size, then for each size from 2
+    /// upward its row of counts, each a 4-byte little-endian length and that
+    /// many big-endian magnitude bytes, then an 8-byte little-endian FNV-1a-64
+    /// of every preceding byte. Cumulative counts are derivable, so they are
+    /// not stored. The body is streamed, so memory stays flat.
     pub fn save_to_file(&self, path: &str) -> std::io::Result<()> {
         use std::io::Write as _;
         let mut out = std::io::BufWriter::new(std::fs::File::create(path)?);
-        out.write_all(b"lambda-binarization-table v1\n")?;
         let mut checksum = FNV_OFFSET;
-        let mut header = String::new();
-        match self.cap {
-            Some(cap) => writeln!(header, "cap {}", cap).unwrap(),
-            None => header.push_str("cap inf\n"),
-        }
-        writeln!(header, "size {}", self.built_size()).unwrap();
-        out.write_all(header.as_bytes())?;
+
+        let mut header = Vec::new();
+        header.extend_from_slice(TABLE_MAGIC);
+        header.push(if self.cap.is_some() { 1 } else { 0 });
+        put_u32(&mut header, self.cap.map_or(0, |c| c as u32));
+        put_u32(&mut header, self.built_size() as u32);
+        out.write_all(&header)?;
         checksum = fnv1a64_update(checksum, &header);
+
         for n in 2..=self.built_size() {
-            let cells: Vec<String> =
-                self.rows[n].iter().map(|v| v.to_hex_string()).collect();
-            let row = format!("{}\n", cells.join(" "));
-            out.write_all(row.as_bytes())?;
-            checksum = fnv1a64_update(checksum, &row);
+            for v in &self.rows[n] {
+                let mag = to_bytes_be(v);
+                let mut cell = Vec::new();
+                put_u32(&mut cell, mag.len() as u32);
+                cell.extend_from_slice(&mag);
+                out.write_all(&cell)?;
+                checksum = fnv1a64_update(checksum, &cell);
+            }
         }
-        writeln!(out, "checksum {:016x}", checksum)?;
+        out.write_all(&checksum.to_le_bytes())?;
         out.flush()
     }
 
     /// Read a table written by save_to_file (any implementation). The checksum
     /// is verified, so any corruption or truncation is rejected.
     pub fn load_from_file(path: &str) -> Result<Table, String> {
-        let content = fs::read_to_string(path).map_err(|e| e.to_string())?;
-        let lines: Vec<&str> = content.lines().collect();
-        if lines.first() != Some(&"lambda-binarization-table v1") {
+        let data = fs::read(path).map_err(|e| e.to_string())?;
+        let header_size = TABLE_MAGIC.len() + 1 + 4 + 4;
+        if data.len() < header_size + 8 || &data[..TABLE_MAGIC.len()] != TABLE_MAGIC {
             return Err("not a lambda-binarization table file".to_string());
         }
-        let last = *lines.last().unwrap();
-        let stored = last
-            .strip_prefix("checksum ")
-            .ok_or("table file is missing its checksum line")?;
-        let stored = u64::from_str_radix(stored, 16).map_err(|e| e.to_string())?;
-        let mut checksum = FNV_OFFSET;
-        for line in &lines[1..lines.len() - 1] {
-            checksum = fnv1a64_update(checksum, &format!("{}\n", line));
-        }
-        if checksum != stored {
+        let end = data.len() - 8;
+        let mut tail = [0u8; 8];
+        tail.copy_from_slice(&data[end..]);
+        let stored = u64::from_le_bytes(tail);
+        if fnv1a64_update(FNV_OFFSET, &data[..end]) != stored {
             return Err("table file failed checksum (corrupt or truncated)".to_string());
         }
-        let fields = &lines[1..lines.len() - 1];
-        let cap_field = fields
-            .first()
-            .and_then(|l| l.strip_prefix("cap "))
-            .ok_or("malformed header")?;
-        let cap = if cap_field == "inf" {
-            None
-        } else {
-            Some(cap_field.parse::<usize>().map_err(|e| e.to_string())?)
-        };
-        let built: usize = fields
-            .get(1)
-            .and_then(|l| l.strip_prefix("size "))
-            .ok_or("malformed header")?
-            .parse()
-            .map_err(|e: std::num::ParseIntError| e.to_string())?;
-        if built < 1 || fields.len() != built + 1 {
-            return Err("table file size does not match its rows".to_string());
+        let cap_kind = data[TABLE_MAGIC.len()];
+        let cap_value = get_u32(&data, TABLE_MAGIC.len() + 1);
+        let built = get_u32(&data, TABLE_MAGIC.len() + 5) as usize;
+        if cap_kind > 1 || built < 1 {
+            return Err("table file has a malformed header".to_string());
         }
+        let cap = if cap_kind == 0 { None } else { Some(cap_value as usize) };
         let mut table = Table::new(cap);
-        for (n, field) in fields.iter().enumerate().take(built + 1).skip(2) {
-            let row: Vec<BigNat> =
-                field.split_whitespace().map(BigNat::from_hex_string).collect();
-            if row.len() != table.width(n) {
-                return Err(format!("row for size {} has the wrong width", n));
+        let mut pos = header_size;
+        for n in 2..=built {
+            let mut row = Vec::new();
+            for _ in 0..table.width(n) {
+                if pos + 4 > end {
+                    return Err("table file is truncated".to_string());
+                }
+                let nbytes = get_u32(&data, pos) as usize;
+                pos += 4;
+                if pos + nbytes > end {
+                    return Err("table file is truncated".to_string());
+                }
+                row.push(from_bytes_be(&data[pos..pos + nbytes]));
+                pos += nbytes;
             }
             let mut cumulative = table.cum.last().unwrap().clone();
             if let Some(first) = row.first() {
@@ -539,6 +577,9 @@ impl Table {
             }
             table.rows.push(row);
             table.cum.push(cumulative);
+        }
+        if pos != end {
+            return Err("table file size does not match its rows".to_string());
         }
         Ok(table)
     }
@@ -1146,24 +1187,19 @@ fn self_test() {
         let bits = bits_for_index(1235);
         let term = decode(&mut loaded, &bits).unwrap();
         assert_eq!(encode(&mut loaded, &term).unwrap(), bits, "round trip loaded");
-        // corruption is rejected: flipped digit, missing checksum, dropped row
-        let lines: Vec<String> =
-            fs::read_to_string(path).unwrap().lines().map(String::from).collect();
-        let mid = lines.len() / 2;
-        let write = |ls: &[String]| {
-            fs::write(path, ls.join("\n") + "\n").unwrap();
-        };
-        let mut flipped = lines.clone();
-        let replacement = if flipped[mid].starts_with('1') { "2" } else { "1" };
-        flipped[mid].replace_range(0..1, replacement);
-        write(&flipped);
-        assert!(Table::load_from_file(path).is_err(), "flipped digit");
-        write(&lines[..lines.len() - 1]);
-        assert!(Table::load_from_file(path).is_err(), "missing checksum");
-        let mut dropped = lines.clone();
-        dropped.remove(mid);
-        write(&dropped);
-        assert!(Table::load_from_file(path).is_err(), "dropped row");
+        // corruption is rejected: flipped byte, truncation, bad magic
+        let bytes = fs::read(path).unwrap();
+        let mid = bytes.len() / 2;
+        let mut flipped = bytes.clone();
+        flipped[mid] ^= 1;
+        fs::write(path, &flipped).unwrap();
+        assert!(Table::load_from_file(path).is_err(), "flipped byte");
+        fs::write(path, &bytes[..bytes.len() - 3]).unwrap();
+        assert!(Table::load_from_file(path).is_err(), "truncated");
+        let mut bad_magic = bytes.clone();
+        bad_magic[0] ^= 1;
+        fs::write(path, &bad_magic).unwrap();
+        assert!(Table::load_from_file(path).is_err(), "bad magic");
         fs::remove_file(path).unwrap();
     }
     {

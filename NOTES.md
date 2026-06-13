@@ -131,9 +131,9 @@ Let L = string bit length, n_max ≈ 1.028·L, w = word size.
 | + JUMP tables | +Θ(L³) small words | — | Θ(L) expected (measured 1.4 probes/app node) |
 
 Concrete anchors (measured): the uncapped T-table holds 47 MiB of count
-*data* in memory at L=1024 and writes a 95 MiB hex file (the L³/4-bit
+*data* in memory at L=1024 and writes a 43 MiB file (the L³/4-bit
 formula is asymptotic and under-predicts ~30% here); the capped K=32 table
-is 2.2 MiB in memory / 4.4 MiB on disk at L=1024. SPLIT+JUMP ≈ 1 MB at
+is 2.2 MiB in memory / 2.1 MiB on disk at L=1024. SPLIT+JUMP ≈ 1 MB at
 L=60. Save and load stream the file through an incremental checksum, so
 peak process RSS stays near the in-memory table size (~80 MB at L=1024
 uncapped) rather than doubling for the file buffer.
@@ -288,9 +288,9 @@ probes per app node (L ≤ 60); 202-bit canonical decode 39 ms in Python.
 **Compiled-language benchmarks** (C++ and Rust `--bench`, one process per
 block; rendered in `plots/`, raw data `plots/bench_results.csv`): at
 L = 64 unbounded, C++ builds in ~3 ms and decodes in 10 µs; at L = 1024
-unbounded, build 21 s, decode 1.1 ms, encode 0.6 ms, table 95 MiB on
+unbounded, build 21 s, decode 1.1 ms, encode 0.6 ms, table 43 MiB on
 disk, ~80 MB peak RSS; the K = 32 cap at the same length: build 0.6 s,
-table 4.4 MiB on disk, ~9 MB peak. Rust tracks C++ closely — decode a touch
+table 2.1 MiB on disk, ~9 MB peak. Rust tracks C++ closely — decode a touch
 faster, build ~40% slower (allocator-heavy bignums), peak RSS comparable.
 Table metrics (entries, bits, disk bytes) are bit-identical between the
 two — an additional cross-validation.
@@ -471,9 +471,11 @@ lazily during decode); share one per thread.
   (expression trees).
 - workflow helper: `max_de_bruijn_index` / `MaxDeBruijnIndex`.
 - persistence: `table.save`/`Table.load` (Python), `saveToFile`/
-  `loadFromFile` (C++), `save_to_file`/`load_from_file` (Rust) — one
-  shared text format with last-row validation; WL persists its memo store
-  as plain WL data via Put/Get (merging on load).
+  `loadFromFile` (C++), `save_to_file`/`load_from_file` (Rust),
+  `SaveLambdaTable`/`LoadLambdaTable` (WL) — one shared binary format
+  (`.lamtab`: magic, cap, size, length-prefixed big-endian count rows,
+  FNV-1a-64 trailer), byte-identical and cross-loadable across all four; WL
+  also reads and writes native `.wxf` and `.mx` for the same table.
 
 `--vectors` emits the shared test vectors (Python/C++/Rust);
 `--save-table`/`--load-table` exercise cross-language table interop;

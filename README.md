@@ -82,8 +82,8 @@ term = decode(table, "010001100")    # every 0/1 string is valid
 print(show_term(term))               # (λ1 (λλ1)) (λ1)
 assert encode(table, term) == "010001100"
 
-table.save("table.txt")              # persist the expensive artifact
-table = Table.load("table.txt")      # ... and continue incrementally
+table.save("table.lamtab")              # persist the expensive artifact
+table = Table.load("table.lamtab")      # ... and continue incrementally
 ```
 
 Self-test: `python3 python/lambda_bijection.py` (validates counts against
@@ -110,8 +110,8 @@ cpp/lambda_bijection_cpp                        # self-test and demo
 cpp/lambda_bijection_cpp --vectors              # decode test vectors
 cpp/lambda_bijection_cpp --compress-vectors     # compression test vectors
 cpp/lambda_bijection_cpp --fuzz blobs.txt       # decode hex blobs (see verify/)
-cpp/lambda_bijection_cpp --save-table t.txt     # write a sample table (cap 5)
-cpp/lambda_bijection_cpp --load-table t.txt     # load and verify a table
+cpp/lambda_bijection_cpp --save-table t.lamtab     # write a sample table (cap 5)
+cpp/lambda_bijection_cpp --load-table t.lamtab     # load and verify a table
 cpp/lambda_bijection_cpp --bench inf 256        # one benchmark block (CSV)
 ```
 
@@ -143,8 +143,8 @@ Get["/abs/path/to/wolfram/LambdaBinarization.wl"]   (* Needs["LambdaBinarization
 DecodeBitString["010001100"]            (* a closed lambda term *)
 LambdaTermForm[%]                       (* renders (λ1 (λλ1)) (λ1) *)
 LambdaTermTree[DecodeBitString["01"]]   (* expression tree, λ / @ nodes *)
-SaveLambdaTable["table.wl"]             (* persist memoised counts *)
-LoadLambdaTable["table.wl"]             (* merge them back *)
+SaveLambdaTable["table.lamtab", 64]     (* shared binary (.wxf, .mx also work) *)
+LoadLambdaTable["table.lamtab"]         (* load it back *)
 LambdaBijectionSelfTest[]               (* association of checks, all True *)
 ```
 
@@ -209,14 +209,15 @@ everyone else can ignore it after the initial build.
 
 ## Tables on disk
 
-One portable text format (`lambda-binarization-table v1`: header, cap,
-size, one line of hex counts per size, then an FNV-1a-64 `checksum` line),
-written and read by Python, C++ and Rust interchangeably — the files are
-byte-identical across languages, save and load stream the body so memory
+One portable binary format (`.lamtab`: a 7-byte magic, the cap, the built
+size, then per-size rows of length-prefixed big-endian counts, then an
+FNV-1a-64 trailer), written and read by all four ports interchangeably — the
+files are byte-identical across languages, save streams the body so memory
 stays flat, and load verifies the checksum, rejecting any corruption or
-truncation. WL persists its memoised store as plain WL data via `Put`/`Get`
-(merging on load). Sizes: see the plots below; the unbounded table reaches
-~95 MiB on disk at L = 1024, the K = 32 table 4.4 MiB.
+truncation. The Wolfram port reads and writes the same `.lamtab` and also
+offers native `.wxf` and `.mx` for the same table. Sizes: see the plots below;
+the unbounded table reaches ~43 MiB on disk at L = 1024, the K = 32 table
+2.1 MiB. (Format details: [docs/API.md](docs/API.md) §4.)
 
 ## Performance
 
@@ -240,8 +241,8 @@ follows the same curves with ~50× larger constants
 
 Summary (C++ unless noted): at L = 64, build ~3 ms, decode 10 µs, encode
 5 µs. At L = 1024 unbounded: build 21 s once, decode 1.1 ms, encode
-0.6 ms, table 95 MiB on disk, ~80 MB peak RSS. Same length with cap K = 32:
-build 0.6 s, table 4.4 MiB, ~9 MB peak RSS. Rust tracks C++ closely —
+0.6 ms, table 43 MiB on disk, ~80 MB peak RSS. Same length with cap K = 32:
+build 0.6 s, table 2.1 MiB, ~9 MB peak RSS. Rust tracks C++ closely —
 decode a touch faster, build ~40 % slower (allocator-heavy bignums), peak
 RSS comparable. Table build is one-time and incremental: extending a saved
 table to a longer length costs only the marginal rows.
@@ -349,7 +350,7 @@ See [docs/API.md](docs/API.md) for the full programmer API and
   including the open-term contexts (`count(n, m)` for m > 0).
 - 800 decode vectors byte-identical across Python, C++, Rust and WL.
 - Table files byte-identical and cross-loadable between Python, C++, Rust;
-  checksum corruption (flipped digit, dropped row, missing checksum) is
+  checksum corruption (a flipped byte, a truncated file, a bad magic) is
   rejected by every loader.
 - Compression output byte-identical across Python, C++ and Rust on the
   shared vector set; round trips on all exhaustively enumerated small

@@ -358,12 +358,56 @@ inline void checkClosed(const TermPtr& term, int depth = 0) {
 // and load stream the file without holding the whole body in memory.
 constexpr std::uint64_t kFnvOffset = 0xCBF29CE484222325ULL;
 
-inline std::uint64_t fnv1a64Update(std::uint64_t h, const std::string& data) {
-  for (unsigned char byte : data) {
-    h ^= byte;
+inline std::uint64_t fnv1a64Update(std::uint64_t h, const char* data,
+                                   std::size_t len) {
+  for (std::size_t i = 0; i < len; ++i) {
+    h ^= static_cast<unsigned char>(data[i]);
     h *= 0x100000001B3ULL;
   }
   return h;
+}
+inline std::uint64_t fnv1a64Update(std::uint64_t h, const std::string& data) {
+  return fnv1a64Update(h, data.data(), data.size());
+}
+
+// Magic for the portable binary table format (.lamtab); the last byte is the
+// format version. Shared byte-for-byte with the Python, Rust and Wolfram ports.
+const std::string kTableMagic("LAMTAB\x01", 7);
+
+// Little-endian u32 and big-endian magnitude helpers for that format.
+inline void putU32(std::string& out, std::uint32_t v) {
+  out.push_back(static_cast<char>(v & 0xFF));
+  out.push_back(static_cast<char>((v >> 8) & 0xFF));
+  out.push_back(static_cast<char>((v >> 16) & 0xFF));
+  out.push_back(static_cast<char>((v >> 24) & 0xFF));
+}
+inline std::uint32_t getU32(const std::string& d, std::size_t pos) {
+  return static_cast<std::uint8_t>(d[pos]) |
+         (static_cast<std::uint32_t>(static_cast<std::uint8_t>(d[pos + 1])) << 8) |
+         (static_cast<std::uint32_t>(static_cast<std::uint8_t>(d[pos + 2])) << 16) |
+         (static_cast<std::uint32_t>(static_cast<std::uint8_t>(d[pos + 3])) << 24);
+}
+inline std::string toBytesBigEndian(const BigNat& v) {
+  const std::size_t nbytes = (v.bitLength() + 7) / 8;
+  std::string out(nbytes, '\0');
+  for (std::size_t k = 0; k < nbytes; ++k) {  // k counts bytes from the LSB
+    unsigned char byte = 0;
+    for (int j = 0; j < 8; ++j)
+      if (v.bit(8 * k + j)) byte |= static_cast<unsigned char>(1u << j);
+    out[nbytes - 1 - k] = static_cast<char>(byte);
+  }
+  return out;
+}
+inline BigNat fromBytesBigEndian(const std::string& d, std::size_t pos,
+                                 std::size_t n) {
+  BigNat v;
+  for (std::size_t i = 0; i < n; ++i) {
+    for (int b = 0; b < 8; ++b) v.shiftLeftOneBit();
+    const unsigned char byte = static_cast<unsigned char>(d[pos + i]);
+    for (int b = 7; b >= 0; --b)
+      if ((byte >> b) & 1u) v.setBit(static_cast<std::size_t>(b));
+  }
+  return v;
 }
 
 // context: 0 = top level / lambda body, 1 = left of app, 2 = right of app
@@ -465,70 +509,84 @@ class Table {
     return cum_[n];
   }
 
-  // Portable text format shared with the Python and Rust implementations
-  // (identical bytes in every language): a header line, `cap <K|inf>`,
-  // `size <built>`, one line of space-separated lowercase-hex entries per
-  // size from 2 upward, then `checksum <hex>` (FNV-1a 64-bit over every byte
-  // between the header and the checksum line).  Cumulative counts are
-  // derivable, so they are not stored.
+  // Portable binary format shared with the Python, Rust and Wolfram ports
+  // (identical bytes in every language): the 7-byte magic LAMTAB\x01, a
+  // one-byte cap kind (0 unbounded, 1 finite) and 4-byte little-endian cap
+  // value, the 4-byte little-endian built size, then for each size from 2
+  // upward its row of counts, each a 4-byte little-endian length and that many
+  // big-endian magnitude bytes, then an 8-byte little-endian FNV-1a-64 of every
+  // preceding byte. Cumulative counts are derivable, so they are not stored.
+  // The body is streamed, so memory stays flat.
   void saveToFile(const std::string& path) const {
-    std::ofstream out(path);
+    std::ofstream out(path, std::ios::binary);
     if (!out) throw std::runtime_error("cannot write " + path);
-    out << "lambda-binarization-table v1\n";
     std::uint64_t checksum = kFnvOffset;
     auto emit = [&](const std::string& chunk) {
-      out << chunk;
+      out.write(chunk.data(), static_cast<std::streamsize>(chunk.size()));
       checksum = fnv1a64Update(checksum, chunk);
     };
-    emit("cap " + (cap_ ? std::to_string(*cap_) : "inf") + "\n");
-    emit("size " + std::to_string(builtSize()) + "\n");
+    std::string header = kTableMagic;
+    header.push_back(cap_ ? char(1) : char(0));
+    putU32(header, cap_ ? static_cast<std::uint32_t>(*cap_) : 0u);
+    putU32(header, static_cast<std::uint32_t>(builtSize()));
+    emit(header);
     for (int n = 2; n <= builtSize(); ++n) {
-      std::string line;
-      for (std::size_t m = 0; m < rows_[n].size(); ++m)
-        line += (m == 0 ? "" : " ") + rows_[n][m].toHexString();
-      emit(line + "\n");
+      for (const BigNat& v : rows_[n]) {
+        const std::string mag = toBytesBigEndian(v);
+        std::string cell;
+        putU32(cell, static_cast<std::uint32_t>(mag.size()));
+        cell += mag;
+        emit(cell);
+      }
     }
-    out << "checksum " << std::hex << std::setw(16) << std::setfill('0')
-        << checksum << "\n";
+    std::string trailer;
+    for (int i = 0; i < 8; ++i)
+      trailer.push_back(static_cast<char>((checksum >> (8 * i)) & 0xFF));
+    out.write(trailer.data(), static_cast<std::streamsize>(trailer.size()));
   }
 
   static Table loadFromFile(const std::string& path) {
-    std::ifstream in(path);
+    std::ifstream in(path, std::ios::binary);
     if (!in) throw std::runtime_error("cannot read " + path);
-    std::vector<std::string> lines;
-    for (std::string line; std::getline(in, line);) lines.push_back(line);
-    if (lines.empty() || lines.front() != "lambda-binarization-table v1")
+    const std::string data((std::istreambuf_iterator<char>(in)),
+                           std::istreambuf_iterator<char>());
+    const std::size_t headerSize = kTableMagic.size() + 1 + 4 + 4;
+    if (data.size() < headerSize + 8 ||
+        data.compare(0, kTableMagic.size(), kTableMagic) != 0)
       throw std::runtime_error("not a lambda-binarization table file");
-    if (lines.back().rfind("checksum ", 0) != 0)
-      throw std::runtime_error("table file is missing its checksum line");
-    std::uint64_t checksum = kFnvOffset;
-    for (std::size_t i = 1; i + 1 < lines.size(); ++i)
-      checksum = fnv1a64Update(checksum, lines[i] + "\n");
-    const std::uint64_t stored =
-        std::stoull(lines.back().substr(9), nullptr, 16);
+    const std::size_t end = data.size() - 8;
+    const std::uint64_t checksum = fnv1a64Update(kFnvOffset, data.data(), end);
+    std::uint64_t stored = 0;
+    for (int i = 0; i < 8; ++i)
+      stored |= static_cast<std::uint64_t>(static_cast<std::uint8_t>(data[end + i]))
+                << (8 * i);
     if (checksum != stored)
       throw std::runtime_error("table file failed checksum (corrupt)");
-    if (lines.size() < 3 || lines[1].rfind("cap ", 0) != 0 ||
-        lines[2].rfind("size ", 0) != 0)
+    const std::uint8_t capKind = static_cast<std::uint8_t>(data[kTableMagic.size()]);
+    const std::uint32_t capValue = getU32(data, kTableMagic.size() + 1);
+    const std::uint32_t built = getU32(data, kTableMagic.size() + 5);
+    if (capKind > 1 || built < 1)
       throw std::runtime_error("table file has a malformed header");
-    const std::string capField = lines[1].substr(4);
-    Table table(capField == "inf" ? std::optional<int>()
-                                  : std::optional<int>(std::stoi(capField)));
-    const int built = std::stoi(lines[2].substr(5));
-    if (built < 1 || static_cast<int>(lines.size()) != built + 3)
-      throw std::runtime_error("table file size does not match its rows");
-    for (int n = 2; n <= built; ++n) {
-      std::istringstream fields(lines[n + 1]);
+    Table table(capKind == 0 ? std::optional<int>()
+                             : std::optional<int>(static_cast<int>(capValue)));
+    std::size_t pos = headerSize;
+    for (int n = 2; n <= static_cast<int>(built); ++n) {
       std::vector<BigNat> row;
-      std::string field;
-      while (fields >> field) row.push_back(BigNat::fromHexString(field));
-      if (static_cast<int>(row.size()) != table.width(n))
-        throw std::runtime_error("table row has the wrong width");
+      for (int j = 0; j < table.width(n); ++j) {
+        if (pos + 4 > end) throw std::runtime_error("table file is truncated");
+        const std::uint32_t nbytes = getU32(data, pos);
+        pos += 4;
+        if (pos + nbytes > end) throw std::runtime_error("table file is truncated");
+        row.push_back(fromBytesBigEndian(data, pos, nbytes));
+        pos += nbytes;
+      }
       BigNat cumulative = table.cum_.back();
       if (!row.empty()) cumulative += row[0];
       table.rows_.push_back(std::move(row));
       table.cum_.push_back(std::move(cumulative));
     }
+    if (pos != end)
+      throw std::runtime_error("table file size does not match its rows");
     return table;
   }
 
@@ -1083,30 +1141,30 @@ void selfTest() {
     const std::string bits = bitsForIndex(1235);
     require(encode(loaded, decode(loaded, bits)) == bits,
             "round trip on loaded table");
-    // corruption is rejected: flipped digit, missing checksum, dropped row
-    std::vector<std::string> lines;
+    // corruption is rejected: flipped byte, truncation, bad magic
+    std::string bytes;
     {
-      std::ifstream in(path);
-      for (std::string line; std::getline(in, line);) lines.push_back(line);
+      std::ifstream in(path, std::ios::binary);
+      bytes.assign((std::istreambuf_iterator<char>(in)),
+                   std::istreambuf_iterator<char>());
     }
-    const std::size_t mid = lines.size() / 2;
-    auto writeLines = [&](const std::vector<std::string>& ls) {
-      std::ofstream out(path);
-      for (const auto& l : ls) out << l << "\n";
+    auto writeBytes = [&](const std::string& b) {
+      std::ofstream out(path, std::ios::binary);
+      out.write(b.data(), static_cast<std::streamsize>(b.size()));
     };
-    std::vector<std::string> flipped = lines;
-    flipped[mid][0] = flipped[mid][0] == '1' ? '2' : '1';
-    writeLines(flipped);
+    std::string flipped = bytes;
+    flipped[flipped.size() / 2] ^= 1;
+    writeBytes(flipped);
     require(throwsException([&] { Table::loadFromFile(path); }),
-            "load rejects a flipped digit");
-    writeLines({lines.begin(), lines.end() - 1});
+            "load rejects a flipped byte");
+    writeBytes(bytes.substr(0, bytes.size() - 3));
     require(throwsException([&] { Table::loadFromFile(path); }),
-            "load rejects a missing checksum");
-    std::vector<std::string> dropped = lines;
-    dropped.erase(dropped.begin() + mid);
-    writeLines(dropped);
+            "load rejects truncation");
+    std::string badMagic = bytes;
+    badMagic[0] ^= 1;
+    writeBytes(badMagic);
     require(throwsException([&] { Table::loadFromFile(path); }),
-            "load rejects a dropped row");
+            "load rejects bad magic");
     std::remove(path.c_str());
   }
   {

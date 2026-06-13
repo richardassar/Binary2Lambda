@@ -140,6 +140,10 @@ _FNV_OFFSET = 0xCBF29CE484222325
 _FNV_PRIME = 0x100000001B3
 _FNV_MASK = 0xFFFFFFFFFFFFFFFF
 
+# Magic for the portable binary table format (.lamtab); the last byte is the
+# format version. Shared byte-for-byte with the C++, Rust and Wolfram ports.
+_TABLE_MAGIC = b"LAMTAB\x01"
+
 
 def _fnv1a64_update(h: int, data: bytes) -> int:
     """Fold data into a running FNV-1a 64-bit hash, used as a table-file
@@ -203,60 +207,73 @@ class Table:
         self.extend(target)
 
     def save(self, path: str) -> None:
-        """Write the table to disk (portable text format, shared with C++ and
+        """Write the table to disk (portable binary format, shared with C++ and
         Rust; the bytes are identical in every language).
 
-        Format: header line `lambda-binarization-table v1`, `cap <K|inf>`,
-        `size <built>`, one line of space-separated lowercase-hex entries per
-        size from 2 upward, then `checksum <hex>` (FNV-1a 64-bit over every
-        byte between the header and the checksum line).  Cumulative counts are
-        derivable, so they are not stored.
-        """
-        cap = "inf" if self.index_cap is None else str(self.index_cap)
+        Layout: the 7-byte magic `LAMTAB\\x01` (the last byte is the version),
+        a one-byte cap kind (0 unbounded, 1 finite) and 4-byte little-endian
+        cap value, the 4-byte little-endian built size, then for each size from
+        2 upward its row of counts, each count a 4-byte little-endian length
+        and that many big-endian magnitude bytes, then an 8-byte little-endian
+        FNV-1a-64 of every preceding byte. Cumulative counts are derivable, so
+        they are not stored. The body is streamed, so memory stays flat."""
         checksum = _FNV_OFFSET
-        with open(path, "w", encoding="ascii") as handle:
-            handle.write("lambda-binarization-table v1\n")
-            for chunk in (f"cap {cap}\n", f"size {self.built_size}\n"):
-                handle.write(chunk)
-                checksum = _fnv1a64_update(checksum, chunk.encode("ascii"))
+
+        def emit(handle, chunk: bytes) -> None:
+            nonlocal checksum
+            handle.write(chunk)
+            checksum = _fnv1a64_update(checksum, chunk)
+
+        cap = self.index_cap
+        with open(path, "wb") as handle:
+            emit(handle, _TABLE_MAGIC)
+            emit(handle, b"\x00" if cap is None else b"\x01")
+            emit(handle, (0 if cap is None else cap).to_bytes(4, "little"))
+            emit(handle, self.built_size.to_bytes(4, "little"))
             for n in range(2, self.built_size + 1):
-                chunk = " ".join(format(v, "x") for v in self._rows[n]) + "\n"
-                handle.write(chunk)
-                checksum = _fnv1a64_update(checksum, chunk.encode("ascii"))
-            handle.write(f"checksum {checksum:016x}\n")
+                for value in self._rows[n]:
+                    width = (value.bit_length() + 7) // 8
+                    emit(handle, width.to_bytes(4, "little"))
+                    emit(handle, value.to_bytes(width, "big"))
+            handle.write(checksum.to_bytes(8, "little"))
 
     @classmethod
     def load(cls, path: str) -> "Table":
         """Read a table written by save (any implementation).  The checksum is
         verified, so any corruption or truncation is rejected before the table
         is returned."""
-        with open(path, encoding="ascii") as handle:
-            lines = handle.read().splitlines()
-        if not lines or lines[0] != "lambda-binarization-table v1":
+        with open(path, "rb") as handle:
+            data = handle.read()
+        head = len(_TABLE_MAGIC) + 1 + 4 + 4
+        if len(data) < head + 8 or data[:len(_TABLE_MAGIC)] != _TABLE_MAGIC:
             raise ValueError("not a lambda-binarization table file")
-        if not lines[-1].startswith("checksum "):
-            raise ValueError("table file is missing its checksum line")
-        stored = int(lines[-1].split()[1], 16)
-        checksum = _FNV_OFFSET
-        for line in lines[1:-1]:
-            checksum = _fnv1a64_update(checksum, (line + "\n").encode("ascii"))
-        if checksum != stored:
+        if _fnv1a64_update(_FNV_OFFSET, memoryview(data)[:-8]) \
+                != int.from_bytes(data[-8:], "little"):
             raise ValueError("table file failed checksum (corrupt or truncated)")
-        fields = lines[1:-1]
-        if len(fields) < 2 or not fields[0].startswith("cap ") \
-                or not fields[1].startswith("size "):
+        pos = len(_TABLE_MAGIC)
+        cap_kind = data[pos]
+        cap_value = int.from_bytes(data[pos + 1:pos + 5], "little")
+        built = int.from_bytes(data[pos + 5:pos + 9], "little")
+        pos = head
+        if cap_kind not in (0, 1) or built < 1:
             raise ValueError("table file has a malformed header")
-        cap_field = fields[0].split()[1]
-        table = cls(index_cap=None if cap_field == "inf" else int(cap_field))
-        built = int(fields[1].split()[1])
-        if built < 1 or len(fields) - 2 != built - 1:
-            raise ValueError("table file size does not match its rows")
-        for n, line in zip(range(2, built + 1), fields[2:]):
-            row = [int(v, 16) for v in line.split()]
-            if len(row) != table._width(n):
-                raise ValueError(f"row for size {n} has the wrong width")
+        table = cls(index_cap=None if cap_kind == 0 else cap_value)
+        end = len(data) - 8
+        for n in range(2, built + 1):
+            row = []
+            for _ in range(table._width(n)):
+                if pos + 4 > end:
+                    raise ValueError("table file is truncated")
+                width = int.from_bytes(data[pos:pos + 4], "little")
+                pos += 4
+                if pos + width > end:
+                    raise ValueError("table file is truncated")
+                row.append(int.from_bytes(data[pos:pos + width], "big"))
+                pos += width
             table._rows.append(row)
             table._cum.append(table._cum[-1] + (row[0] if row else 0))
+        if pos != end:
+            raise ValueError("table file size does not match its rows")
         return table
 
     def entry_count(self) -> int:
@@ -506,7 +523,7 @@ def _self_test() -> None:
     for cap, built in ((5, 40), (None, 30)):
         saved = Table(index_cap=cap)
         saved.extend(built)
-        with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
+        with tempfile.NamedTemporaryFile(suffix=".lamtab", delete=False) as f:
             path = f.name
         try:
             saved.save(path)
@@ -516,19 +533,18 @@ def _self_test() -> None:
                 assert loaded.count(n, 0) == saved.count(n, 0), n
             bits = bin(1235 + 1)[3:]
             assert encode(loaded, decode(loaded, bits)) == bits
-            good = open(path, encoding="ascii").read().splitlines()
-            mid = len(good) // 2  # an interior count row
-            flipped = list(good)
-            flipped[mid] = ("1" + flipped[mid][1:] if flipped[mid][0] != "1"
-                            else "2" + flipped[mid][1:])
+            good = bytearray(open(path, "rb").read())
+            mid = len(good) // 2
+            flipped = bytearray(good)
+            flipped[mid] ^= 1
             corruptions = [
-                ("\n".join(flipped), "flipped digit"),
-                ("\n".join(good[:-1]), "missing checksum"),
-                ("\n".join(good[:mid] + good[mid + 1:]), "dropped row"),
+                (bytes(flipped), "flipped byte"),
+                (bytes(good[:-3]), "truncation"),
+                (bytes([good[0] ^ 1]) + bytes(good[1:]), "bad magic"),
             ]
-            for text, label in corruptions:
-                with open(path, "w", encoding="ascii") as handle:
-                    handle.write(text + "\n")
+            for blob, label in corruptions:
+                with open(path, "wb") as handle:
+                    handle.write(blob)
                 try:
                     Table.load(path)
                     raise AssertionError(f"load accepted {label}")

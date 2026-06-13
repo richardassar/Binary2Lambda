@@ -58,12 +58,15 @@ Optional: every function builds the entries it needs on demand.";
 ClearLambdaTable::usage =
   "ClearLambdaTable[] discards all memoised counting-table entries.";
 SaveLambdaTable::usage =
-  "SaveLambdaTable[path] writes every memoised counting-table entry to the \
-given file as plain Wolfram Language data; returns a summary association.";
+  "SaveLambdaTable[path, size, cap] writes the counting table for sizes 2 to \
+size under the given de Bruijn index cap (default Infinity) to the file. The \
+format follows the extension: .lamtab is the portable binary format shared \
+byte-for-byte with the Python, C++ and Rust ports; .wxf and .mx are native \
+Wolfram serializations of the same table. Returns a summary association.";
 LoadLambdaTable::usage =
-  "LoadLambdaTable[path] merges the counting-table entries in the given file \
-(written by SaveLambdaTable) into the current table, keeping existing \
-entries; returns a summary association.";
+  "LoadLambdaTable[path] reads a table written by SaveLambdaTable (.lamtab, \
+.wxf, or .mx) and installs its counts into the session; returns a summary \
+association.";
 EncodeLambdaTerm::usage =
   "EncodeLambdaTerm[term] or EncodeLambdaTerm[term, cap] gives the binary \
 string (possibly empty) denoting the given closed lambda term.";
@@ -206,46 +209,91 @@ BuildLambdaTable[sizeLimit_Integer, cap_] := (
 
 
 (* ::Text:: *)
-(*The table is the expensive shared artifact, so it can be persisted. SaveLambdaTable harvests every memoised entry (the literal-key down values of the two stores) and writes them with Put as plain Wolfram Language data - portable, human-inspectable, nothing but WL. LoadLambdaTable merges a saved file into the current session: existing entries are kept, loaded ones are added, and subsequent computation continues incrementally from the union.*)
+(*The table for sizes 2..size under a given cap is the expensive shared artifact, so it can be persisted. The format follows the file extension: .lamtab is the portable binary format shared byte-for-byte with the Python, C++ and Rust ports; .wxf and .mx hold the same table as native Wolfram serializations. LoadLambdaTable installs the counts into the session, and computation continues incrementally from them.*)
 
 
 (* ::Code:: *)
-(* The harvest patterns are wrapped in HoldPattern because RuleDelayed holds
-   only its right-hand side: without the wrapper, storedCount[n_Integer, ...]
-   would evaluate while the pattern is being assembled and recurse through
-   the general memo rule. *)
-storedCountEntries[] :=
-  Cases[DownValues[storedCount],
-    HoldPattern[RuleDelayed[
-      Verbatim[HoldPattern][storedCount[n_Integer, m_Integer, c_Integer]],
-      value_Integer]] :> {n, m, c, value}];
+SaveLambdaTable::badext =
+  "`1` is not a supported table extension (use lamtab, wxf, or mx).";
+LoadLambdaTable::badext =
+  "`1` is not a supported table extension (use lamtab, wxf, or mx).";
 
-storedCumulativeEntries[] :=
-  Cases[DownValues[storedCumulative],
-    HoldPattern[RuleDelayed[
-      Verbatim[HoldPattern][
-        storedCumulative[n_Integer, cap : (_Integer | Infinity)]],
-      value_Integer]] :> {n, cap, value}];
+(* The .lamtab format: the 7-byte magic LAMTAB\[Hyphen]1, a one-byte cap kind
+   (0 unbounded, 1 finite) and 4-byte little-endian cap value, the 4-byte
+   little-endian built size, then for each size from 2 upward its row of counts
+   (a 4-byte little-endian length and that many big-endian magnitude bytes
+   each), then an 8-byte little-endian FNV-1a-64 of every preceding byte. *)
+lamtabMagic = Join[ToCharacterCode["LAMTAB"], {1}];
+lamtabFnv[bytes_] := Module[{h = 16^^cbf29ce484222325},
+  Do[h = Mod[BitXor[h, b] 16^^100000001b3, 2^64], {b, bytes}]; h];
+lamtabLE[v_, k_] := Reverse[IntegerDigits[v, 256, k]];
+lamtabValue[bytes_] := FromDigits[Reverse[bytes], 256];
+lamtabCount[v_] := With[{mag = If[v == 0, {}, IntegerDigits[v, 256]]},
+  Join[lamtabLE[Length[mag], 4], mag]];
 
-SaveLambdaTable[path_String] :=
-  Module[{counts = storedCountEntries[],
-      cumulatives = storedCumulativeEntries[]},
-    Put[<|"format" -> "LambdaBinarizationTable",
-        "counts" -> counts, "cumulatives" -> cumulatives|>, path];
-    <|"path" -> path, "countEntries" -> Length[counts],
-      "cumulativeEntries" -> Length[cumulatives]|>];
+tableSnapshot[size_, cap_] := <|"cap" -> cap, "size" -> size,
+  "rows" -> Table[Table[TermCount[n, m, cap], {m, 0, Min[n - 1, cap]}],
+    {n, 2, size}]|>;
+
+installSnapshot[data_] := (
+  Do[With[{n = k + 1, keyCap = Min[data["cap"], k]},
+      Do[storedCount[n, j - 1, keyCap] = data["rows"][[k, j]],
+        {j, Length[data["rows"][[k]]]}]],
+    {k, Length[data["rows"]]}];
+  data);
+
+saveLamtab[path_, size_, cap_] := Module[{body, stream},
+  body = Join[lamtabMagic, {If[cap === Infinity, 0, 1]},
+    lamtabLE[If[cap === Infinity, 0, cap], 4], lamtabLE[size, 4],
+    Flatten[Table[lamtabCount[TermCount[n, m, cap]],
+      {n, 2, size}, {m, 0, Min[n - 1, cap]}]]];
+  body = Join[body, lamtabLE[lamtabFnv[body], 8]];
+  stream = OpenWrite[path, BinaryFormat -> True];
+  BinaryWrite[stream, body, "Byte"];
+  Close[stream]];
+
+loadLamtab[path_] := Module[{bytes, end, pos, capKind, cap, size, nb, v},
+  bytes = BinaryReadList[path, "Byte"];
+  If[Length[bytes] < 24 || Take[bytes, 7] =!= lamtabMagic,
+    Message[LoadLambdaTable::badfile, path]; Return[$Failed]];
+  end = Length[bytes] - 8;
+  If[lamtabFnv[Take[bytes, end]] =!= lamtabValue[Take[bytes, -8]],
+    Message[LoadLambdaTable::badfile, path]; Return[$Failed]];
+  capKind = bytes[[8]];
+  cap = If[capKind == 0, Infinity, lamtabValue[bytes[[9 ;; 12]]]];
+  size = lamtabValue[bytes[[13 ;; 16]]];
+  pos = 17;
+  Do[With[{keyCap = Min[cap, n - 1]},
+      Do[
+        nb = lamtabValue[bytes[[pos ;; pos + 3]]]; pos = pos + 4;
+        v = If[nb == 0, 0, FromDigits[bytes[[pos ;; pos + nb - 1]], 256]];
+        pos = pos + nb;
+        storedCount[n, m, keyCap] = v,
+        {m, 0, Min[n - 1, cap]}]],
+    {n, 2, size}];
+  <|"path" -> path, "size" -> size, "indexCap" -> cap|>];
+
+SaveLambdaTable[path_String, size_Integer, cap_ : Infinity] :=
+  Module[{ext = ToLowerCase[FileExtension[path]]},
+    BuildLambdaTable[size, cap];
+    Switch[ext,
+      "lamtab", saveLamtab[path, size, cap],
+      "wxf", Export[path, tableSnapshot[size, cap], "WXF"],
+      "mx", (lambdaTableMx = tableSnapshot[size, cap]; DumpSave[path, lambdaTableMx]),
+      _, Message[SaveLambdaTable::badext, ext]; Return[$Failed]];
+    <|"path" -> path, "size" -> size, "indexCap" -> cap|>];
 
 LoadLambdaTable[path_String] :=
-  Module[{data = Get[path]},
-    If[!AssociationQ[data] ||
-        Lookup[data, "format"] =!= "LambdaBinarizationTable",
+  Module[{ext = ToLowerCase[FileExtension[path]], data},
+    Switch[ext,
+      "lamtab", Return[loadLamtab[path]],
+      "wxf", data = Import[path, "WXF"],
+      "mx", (Get[path]; data = lambdaTableMx),
+      _, Message[LoadLambdaTable::badext, ext]; Return[$Failed]];
+    If[!AssociationQ[data] || !KeyExistsQ[data, "rows"],
       Message[LoadLambdaTable::badfile, path]; Return[$Failed]];
-    Scan[Apply[Function[{n, m, c, value}, storedCount[n, m, c] = value]],
-      data["counts"]];
-    Scan[Apply[Function[{n, cap, value}, storedCumulative[n, cap] = value]],
-      data["cumulatives"]];
-    <|"path" -> path, "countEntries" -> Length[data["counts"]],
-      "cumulativeEntries" -> Length[data["cumulatives"]]|>];
+    installSnapshot[data];
+    <|"path" -> path, "size" -> data["size"], "indexCap" -> data["cap"]|>];
 
 
 (* ::Section:: *)
@@ -370,14 +418,15 @@ LambdaBijectionSelfTest[] :=
         AllTrue[{LambdaVar[1], LambdaAbs[LambdaVar[2]],
             LambdaApp[LambdaVar[1], LambdaVar[1]]},
           Quiet[EncodeLambdaTerm[#]] === $Failed &]|>;
-    tempPath = FileNameJoin[{$TemporaryDirectory,
-      "lambda-binarization-selftest-table.wl"}];
     savedValue = TermCount[14, 0];
-    SaveLambdaTable[tempPath];
-    ClearLambdaTable[];
-    LoadLambdaTable[tempPath];
-    results["saveAndLoad"] = TermCount[14, 0] === savedValue;
-    DeleteFile[tempPath];
+    results["saveAndLoad"] = AllTrue[{"lamtab", "wxf", "mx"}, Function[ext,
+      tempPath = FileNameJoin[{$TemporaryDirectory,
+        "lambda-binarization-selftest." <> ext}];
+      SaveLambdaTable[tempPath, 14, Infinity];
+      ClearLambdaTable[];
+      LoadLambdaTable[tempPath];
+      With[{ok = TermCount[14, 0] === savedValue},
+        DeleteFile[tempPath]; ok]]];
     Append[results, "allPassed" -> AllTrue[Values[results], TrueQ]]];
 
 End[];

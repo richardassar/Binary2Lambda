@@ -141,8 +141,8 @@ show_term(term)                      # λλ(λ(λ2) 1) 2
 term_size(term), max_de_bruijn_index(term)   # (20, 2)
 encode(table, term)                  # "0110100010"  (same cap on both sides)
 
-table.save("table.txt")              # persist the prebuilt table
-again = Table.load("table.txt")      # ... reload it later, skipping the build
+table.save("table.lamtab")              # persist the prebuilt table
+again = Table.load("table.lamtab")      # ... reload it later, skipping the build
 encode(again, term)                  # "0110100010"
 
 table.set_index_cap(None)            # switch to the unbounded bijection
@@ -160,9 +160,10 @@ LambdaTermForm[term]                              (* λλ(λ(λ2) 1) 2 *)
 {LambdaTermSize[term], MaxDeBruijnIndex[term]}    (* {20, 2} *)
 EncodeLambdaTerm[term, 32]                        (* "0110100010" *)
 
-SaveLambdaTable["table.wl"]          (* persist the memoised counts *)
-ClearLambdaTable[];                   (* forget them *)
-LoadLambdaTable["table.wl"]          (* merge them back *)
+SaveLambdaTable["table.lamtab", 200, 32]  (* the shared binary format; *)
+                                          (* .wxf and .mx are also accepted *)
+ClearLambdaTable[];                        (* forget the memoised counts *)
+LoadLambdaTable["table.lamtab"]            (* load them back *)
 ```
 
 #### C++
@@ -178,8 +179,8 @@ showTerm(term);                               // λλ(λ(λ2) 1) 2
 termSize(term); maxDeBruijnIndex(term);       // 20, 2
 encode(table, term);                          // "0110100010"
 
-table.saveToFile("table.txt");                // persist the prebuilt table
-Table again = Table::loadFromFile("table.txt");
+table.saveToFile("table.lamtab");                // persist the prebuilt table
+Table again = Table::loadFromFile("table.lamtab");
 encode(again, term);                          // "0110100010"
 
 table.setIndexCap(std::nullopt);              // switch to the unbounded bijection
@@ -199,8 +200,8 @@ show_term(&term, 0);                          // λλ(λ(λ2) 1) 2
 (term_size(&term), max_de_bruijn_index(&term));   // (20, 2)
 encode(&mut table, &term).unwrap();           // "0110100010"
 
-table.save_to_file("table.txt").unwrap();     // persist the prebuilt table
-let mut again = Table::load_from_file("table.txt").unwrap();
+table.save_to_file("table.lamtab").unwrap();     // persist the prebuilt table
+let mut again = Table::load_from_file("table.lamtab").unwrap();
 encode(&mut again, &term).unwrap();           // "0110100010"
 
 table.set_index_cap(None);                    // switch to the unbounded bijection
@@ -340,25 +341,26 @@ do not give the every-string-is-a-term property; use the bijection for that.
 
 ## 4. On-disk table format
 
-One portable text format, byte-identical across Python, C++ and Rust and
-cross-loadable between them. Lines, in order:
+One portable binary format (`.lamtab`), byte-identical across all four ports
+and cross-loadable between them. Fields, in order:
 
 ```
-lambda-binarization-table v1
-cap <K|inf>
-size <built_size>
-<hex counts for size 0>
-<hex counts for size 1>
-...
-checksum <fnv1a64-hex>
+magic    "LAMTAB\x01"                         7 bytes; the last byte is the version
+cap      kind (1 byte: 0 unbounded, 1 finite) + value (u32 little-endian)
+size     built_size (u32 little-endian)
+rows     for n = 2..built_size, the row T(n, 0..width(n)-1); each count is a
+         u32 little-endian byte length followed by that many big-endian
+         magnitude bytes (length 0 encodes the value 0)
+trailer  FNV-1a-64 (u64 little-endian) of every preceding byte
 ```
 
-Each count line holds the row `T(n, 0..width(n)-1)` as space-separated
-lowercase hex. The checksum is FNV-1a-64 over the body (everything before the
-checksum line), streamed so memory stays flat. Load verifies the checksum and
-rejects any corruption or truncation (flipped digit, dropped row, missing
-checksum). The Wolfram port persists its memoized store as WL data via
-`Put`/`Get` (a different, non-interchangeable format).
+`width(n) = min(n-1, cap) + 1` is derived on load, so it is not stored, and
+cumulative counts are derivable, so they are not stored either. The body is
+streamed when written, so memory stays flat. Load verifies the checksum and
+rejects any corruption or truncation (a flipped byte, a truncated file, a bad
+magic). The Wolfram port reads and writes this same `.lamtab`, and also offers
+two native serializations of the same table chosen by file extension: `.wxf`
+(Wolfram Exchange Format) and `.mx` (`DumpSave` image).
 
 ---
 
