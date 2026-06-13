@@ -253,13 +253,13 @@ impl PartialOrd for BigNat {
 // -------------------------------------------------------------------- terms
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum Term {
+pub enum Term {
     Var(u32),
     Lam(Box<Term>),
     App(Box<Term>, Box<Term>),
 }
 
-fn term_size(term: &Term) -> usize {
+pub fn term_size(term: &Term) -> usize {
     match term {
         Term::Var(i) => *i as usize + 1,
         Term::Lam(body) => term_size(body) + 2,
@@ -267,7 +267,7 @@ fn term_size(term: &Term) -> usize {
     }
 }
 
-fn max_de_bruijn_index(term: &Term) -> u32 {
+pub fn max_de_bruijn_index(term: &Term) -> u32 {
     match term {
         Term::Var(i) => *i,
         Term::Lam(body) => max_de_bruijn_index(body),
@@ -281,7 +281,7 @@ fn max_de_bruijn_index(term: &Term) -> u32 {
 /// and bound by an enclosing lambda (index <= depth). encode and compress
 /// require this: the bijection ranges over closed terms, so only a closed term
 /// has a code.
-fn check_closed(term: &Term, depth: u32) -> Result<(), String> {
+pub fn check_closed(term: &Term, depth: u32) -> Result<(), String> {
     match term {
         Term::Var(i) if *i == 0 => Err("de Bruijn index must be >= 1".to_string()),
         Term::Var(i) if *i > depth => {
@@ -312,7 +312,7 @@ fn fnv1a64_update(mut h: u64, data: &str) -> u64 {
 }
 
 /// context: 0 = top level / lambda body, 1 = left of app, 2 = right of app
-fn show_term(term: &Term, context: u8) -> String {
+pub fn show_term(term: &Term, context: u8) -> String {
     match term {
         Term::Var(i) => i.to_string(),
         Term::Lam(body) => {
@@ -335,7 +335,7 @@ fn show_term(term: &Term, context: u8) -> String {
     }
 }
 
-fn show_bits(bits: &str) -> &str {
+pub fn show_bits(bits: &str) -> &str {
     if bits.is_empty() {
         "ε"
     } else {
@@ -350,7 +350,7 @@ fn show_bits(bits: &str) -> &str {
 /// the effective context min(m, n-1, cap). Size extension is append-only;
 /// changing the cap reuses every row of size <= min(old, new) + 1 (those
 /// are cap-independent) and rebuilds only the rest.
-struct Table {
+pub struct Table {
     cap: Option<usize>,
     rows: Vec<Vec<BigNat>>,
     cum: Vec<BigNat>, // closed terms of size <= n
@@ -358,7 +358,7 @@ struct Table {
 }
 
 impl Table {
-    fn new(index_cap: Option<usize>) -> Table {
+    pub fn new(index_cap: Option<usize>) -> Table {
         if let Some(cap) = index_cap {
             assert!(cap >= 1, "index cap must be at least 1");
         }
@@ -370,7 +370,7 @@ impl Table {
         }
     }
 
-    fn built_size(&self) -> usize {
+    pub fn built_size(&self) -> usize {
         self.rows.len() - 1
     }
 
@@ -420,7 +420,7 @@ impl Table {
     }
 
     /// Append rows up to size_limit; existing rows are never touched.
-    fn extend(&mut self, size_limit: usize) {
+    pub fn extend(&mut self, size_limit: usize) {
         for n in self.rows.len()..=size_limit {
             let row: Vec<BigNat> =
                 (0..self.width(n)).map(|m| self.row_value(n, m)).collect();
@@ -435,7 +435,7 @@ impl Table {
 
     /// Change the de Bruijn cap, reusing all cap-independent rows: rows of
     /// size n are identical under caps K and K' whenever n-1 <= min(K, K').
-    fn set_index_cap(&mut self, new_cap: Option<usize>) {
+    pub fn set_index_cap(&mut self, new_cap: Option<usize>) {
         if let Some(cap) = new_cap {
             assert!(cap >= 1, "index cap must be at least 1");
         }
@@ -463,7 +463,7 @@ impl Table {
     /// `size <built>`, one line of space-separated lowercase-hex entries per
     /// size from 2 upward, then `checksum <hex>` (FNV-1a 64-bit over every
     /// byte between the header and the checksum line).
-    fn save_to_file(&self, path: &str) -> std::io::Result<()> {
+    pub fn save_to_file(&self, path: &str) -> std::io::Result<()> {
         use std::io::Write as _;
         let mut out = std::io::BufWriter::new(std::fs::File::create(path)?);
         out.write_all(b"lambda-binarization-table v1\n")?;
@@ -489,7 +489,7 @@ impl Table {
 
     /// Read a table written by save_to_file (any implementation). The checksum
     /// is verified, so any corruption or truncation is rejected.
-    fn load_from_file(path: &str) -> Result<Table, String> {
+    pub fn load_from_file(path: &str) -> Result<Table, String> {
         let content = fs::read_to_string(path).map_err(|e| e.to_string())?;
         let lines: Vec<&str> = content.lines().collect();
         if lines.first() != Some(&"lambda-binarization-table v1") {
@@ -622,7 +622,7 @@ fn unrank(table: &Table, mut rank: BigNat, n: usize, m: usize) -> Term {
 
 /// Closed lambda term -> binary string (inverse of decode). Errors if term is
 /// not closed or uses an index above the cap.
-fn encode(table: &mut Table, term: &Term) -> Result<String, String> {
+pub fn encode(table: &mut Table, term: &Term) -> Result<String, String> {
     check_closed(term, 0)?;
     if let Some(cap) = table.cap {
         if max_de_bruijn_index(term) as usize > cap {
@@ -638,7 +638,7 @@ fn encode(table: &mut Table, term: &Term) -> Result<String, String> {
 }
 
 /// Binary string -> closed lambda term (total on {0,1}*).
-fn decode(table: &mut Table, bits: &str) -> Result<Term, String> {
+pub fn decode(table: &mut Table, bits: &str) -> Result<Term, String> {
     if !bits.chars().all(|c| c == '0' || c == '1') {
         return Err("input must consist of 0s and 1s".to_string());
     }
@@ -981,7 +981,7 @@ fn walk_decode(
 /// Closed lambda term -> compact bytes: the range coder's byte stream, whose
 /// four-byte flush tail makes it self-delimiting against the structural end of
 /// the walk. Errors on a non-closed term, like encode.
-fn compress(term: &Term) -> Result<Vec<u8>, String> {
+pub fn compress(term: &Term) -> Result<Vec<u8>, String> {
     check_closed(term, 0)?;
     let mut coder = RangeEncoder::new();
     let mut model = AdaptiveModel::new();
@@ -998,7 +998,7 @@ fn compress(term: &Term) -> Result<Vec<u8>, String> {
 /// Any byte string terminates: it yields a term or returns Err. decompress's
 /// domain is compress outputs; without an integrity check it accepts any
 /// bytes, decoding each to some term or signalling an error.
-fn decompress(data: &[u8]) -> Result<Term, String> {
+pub fn decompress(data: &[u8]) -> Result<Term, String> {
     let mut coder = RangeDecoder::new(data);
     let mut model = AdaptiveModel::new();
     let mut budget = MAX_DECODE_NODES;

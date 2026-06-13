@@ -1386,6 +1386,10 @@ int run(int argc, char** argv) {
 
 }  // namespace
 
+// Define LAMBDA_BINARIZATION_NO_MAIN before including this file to use it as a
+// library: the bijection API stays in namespace lambda_bijection and the
+// compression API in namespace lambda_compress, with no entry point of its own.
+#ifndef LAMBDA_BINARIZATION_NO_MAIN
 int main(int argc, char** argv) {
   try {
     return run(argc, argv);
@@ -1394,3 +1398,4 @@ int main(int argc, char** argv) {
     return 1;
   }
 }
+#endif

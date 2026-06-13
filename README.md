@@ -139,7 +139,7 @@ Front End to read it as a documented notebook (text cells explain every
 function), or load it with `Get` and call the API:
 
 ```wl
-Get["/abs/path/to/wolfram/LambdaBinarization.wl"]   (* or << if on $Path *)
+Get["/abs/path/to/wolfram/LambdaBinarization.wl"]   (* Needs["LambdaBinarization`"] once on $Path *)
 DecodeBitString["010001100"]            (* a closed lambda term *)
 LambdaTermForm[%]                       (* renders (λ1 (λλ1)) (λ1) *)
 LambdaTermTree[DecodeBitString["01"]]   (* expression tree, λ / @ nodes *)
