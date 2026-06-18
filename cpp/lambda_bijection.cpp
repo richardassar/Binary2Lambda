@@ -1190,6 +1190,9 @@ void selfTest() {
     for (const std::string& badBits : {std::string("2"), std::string("01x")})
       require(throwsException([&] { decode(table, badBits); }),
               "decode rejects bad bits");
+    for (int badCap : {0, -1})
+      require(throwsException([&] { Table bad(badCap); }),
+              "Table rejects cap " + std::to_string(badCap));
     const std::vector<TermPtr> badTerms = {var(1), app(var(1), var(1)),
                                            lam(var(2)), lam(var(0))};
     for (const TermPtr& bad : badTerms) {

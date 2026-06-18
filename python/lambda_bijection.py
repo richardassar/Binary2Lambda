@@ -496,6 +496,19 @@ def _self_test() -> None:
         for n in range(4, built + 1):
             assert observed.count(n, 0) == reference.count(n, 0), n
 
+    # a cap below 1 admits no terms, so it is rejected at construction
+    for bad_cap in (0, -1):
+        try:
+            Table(index_cap=bad_cap)
+            raise AssertionError(f"Table accepted cap {bad_cap}")
+        except ValueError:
+            pass
+        try:
+            Table(index_cap=2).set_index_cap(bad_cap)
+            raise AssertionError(f"set_index_cap accepted cap {bad_cap}")
+        except ValueError:
+            pass
+
     # encode rejects everything that is not a closed, in-cap term
     table = Table()
     table.extend(14)

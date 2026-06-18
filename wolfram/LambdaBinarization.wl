@@ -92,6 +92,9 @@ EncodeLambdaTerm::notclosed = "`1` is not a closed term (it has a free variable)
 EncodeLambdaTerm::overcap =
   "Term uses de Bruijn indices above the table cap `1`.";
 DecodeBitString::badbits = "`1` is not a string of 0s and 1s.";
+DecodeBitString::badcap =
+  "`1` is not a valid de Bruijn index cap; use an integer >= 1 or Infinity \
+(a cap below 1 admits no terms, so no string decodes).";
 LoadLambdaTable::badfile = "`1` does not contain a saved lambda table.";
 
 
@@ -362,6 +365,8 @@ DecodeBitString[bits_String, cap_] :=
   Module[{number, n},
     If[!StringMatchQ[bits, ("0" | "1") ...],
       Message[DecodeBitString::badbits, bits]; Return[$Failed]];
+    If[TrueQ[cap < 1],
+      Message[DecodeBitString::badcap, cap]; Return[$Failed]];
     number = FromDigits["1" <> bits, 2] - 1;
     n = NestWhile[# + 1 &, 4, ClosedTermCumulative[#, cap] <= number &];
     unrankTerm[number - ClosedTermCumulative[n - 1, cap], n, 0, cap]];
@@ -417,7 +422,9 @@ LambdaBijectionSelfTest[] :=
       "encodeRejectsNonClosed" ->
         AllTrue[{LambdaVar[1], LambdaAbs[LambdaVar[2]],
             LambdaApp[LambdaVar[1], LambdaVar[1]]},
-          Quiet[EncodeLambdaTerm[#]] === $Failed &]|>;
+          Quiet[EncodeLambdaTerm[#]] === $Failed &],
+      "decodeRejectsBadCap" ->
+        AllTrue[{0, -1}, Quiet[DecodeBitString["010", #]] === $Failed &]|>;
     savedValue = TermCount[14, 0];
     results["saveAndLoad"] = AllTrue[{"lamtab", "wxf", "mx"}, Function[ext,
       tempPath = FileNameJoin[{$TemporaryDirectory,

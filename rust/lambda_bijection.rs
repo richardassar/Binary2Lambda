@@ -1566,4 +1566,11 @@ mod tests {
     fn self_test_passes() {
         super::self_test();
     }
+
+    /// A cap below 1 admits no terms, so it is rejected at construction.
+    #[test]
+    #[should_panic(expected = "index cap must be at least 1")]
+    fn rejects_cap_below_one() {
+        let _ = super::Table::new(Some(0));
+    }
 }
