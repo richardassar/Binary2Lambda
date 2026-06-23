@@ -357,6 +357,23 @@ def decode(table: Table, bits: str) -> Term:
     return _unrank(table, number - table.closed_cumulative(n - 1), n, 0)
 
 
+def decode_index(table: Table, index: int) -> Term:
+    """Closed term at enumeration index `index` (`index >= 0`): the integer
+    view of the bijection. `decode_index(0)` is the smallest term, λ1, and
+    `decode_index(N)` equals `decode(table, b)` for `b` the bijective-binary
+    form of N. Use this when the data are integers (fixed-width genomes,
+    Gödel-style IDs, uniform sampling) rather than variable-length bit
+    strings."""
+    if index < 0:
+        raise ValueError("index must be >= 0")
+    return decode(table, bin(index + 1)[3:])
+
+
+def encode_index(table: Table, term: Term) -> int:
+    """Enumeration index of a closed term (inverse of decode_index)."""
+    return int("1" + encode(table, term), 2) - 1
+
+
 def _var_count(table: Table, n: int, m: int) -> int:
     if n < 2 or n - 1 > m:
         return 0
@@ -464,6 +481,10 @@ def _self_test() -> None:
         for number in range(3000):  # string -> term -> string
             bits = bin(number + 1)[3:]
             assert encode(table, decode(table, bits)) == bits, (cap, number)
+    idx = Table()  # integer view: index -> term -> index
+    for number in range(300):
+        assert encode_index(idx, decode_index(idx, number)) == number, number
+    assert decode_index(idx, 0) == Lam(Var(1)), "decode_index(0) must be λ1"
     table = Table()
     capped = Table(index_cap=8)
     for number in range(table.closed_cumulative(9)):  # capped agrees on small sizes

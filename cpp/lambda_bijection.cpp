@@ -694,6 +694,24 @@ inline TermPtr decode(Table& table, const std::string& bits) {
   return unrank(table, number - table.closedCumulative(n - 1), n, 0);
 }
 
+// Integer ("index") view of the bijection: decodeIndex(N) is the closed term
+// at enumeration index N (a natural number; decodeIndex(0) is the smallest
+// term), encodeIndex its inverse. Same map as the bit-string decode/encode -
+// N is the bijective-binary value of the bit string. The std::uint64_t
+// overload and encodeIndexU64 are conveniences for indices that fit a word.
+inline TermPtr decodeIndex(Table& table, const BigNat& index) {
+  return decode(table, (index + BigNat(1)).toBinaryString().substr(1));
+}
+inline TermPtr decodeIndex(Table& table, std::uint64_t index) {
+  return decodeIndex(table, BigNat(index));
+}
+inline BigNat encodeIndex(Table& table, const TermPtr& term) {
+  return BigNat::fromBinaryString("1" + encode(table, term)) - BigNat(1);
+}
+inline std::uint64_t encodeIndexU64(Table& table, const TermPtr& term) {
+  return encodeIndex(table, term).toUint64();  // asserts the index fits 64 bits
+}
+
 }  // namespace lambda_bijection
 
 // ------------------------------------------------------------- compression
@@ -1108,6 +1126,14 @@ void selfTest() {
       require(encode(table, decode(table, bits)) == bits,
               "round trip cap=" + capStr + " number=" + std::to_string(number));
     }
+  }
+  {  // integer view: index -> term -> index
+    Table idx;
+    for (std::uint64_t number = 0; number < 300; ++number)
+      require(encodeIndexU64(idx, decodeIndex(idx, number)) == number,
+              "index round trip " + std::to_string(number));
+    require(sameTerm(decodeIndex(idx, std::uint64_t{0}), lam(var(1))),
+            "decodeIndex(0) must be lambda 1");
   }
   Table unbounded;
   Table capped(8);

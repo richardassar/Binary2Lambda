@@ -74,6 +74,13 @@ DecodeBitString::usage =
   "DecodeBitString[bits] or DecodeBitString[bits, cap] gives the closed \
 lambda term denoted by the given binary string. Total: every string of 0s \
 and 1s, including \"\", denotes a term.";
+DecodeIndex::usage =
+  "DecodeIndex[n] or DecodeIndex[n, cap] gives the closed lambda term at \
+enumeration index n (an integer >= 0); the integer view of DecodeBitString. \
+DecodeIndex[0] is the smallest term.";
+EncodeIndex::usage =
+  "EncodeIndex[term] or EncodeIndex[term, cap] gives the enumeration index \
+(an integer >= 0) of the given closed term; the inverse of DecodeIndex.";
 LambdaTermForm::usage =
   "LambdaTermForm[term] gives a readable one-line rendering of term, for \
 example \"\[Lambda]1 (\[Lambda]\[Lambda]1)\".";
@@ -366,6 +373,19 @@ DecodeBitString[bits_String, cap_] :=
     n = NestWhile[# + 1 &, 4, ClosedTermCumulative[#, cap] <= number &];
     unrankTerm[number - ClosedTermCumulative[n - 1, cap], n, 0, cap]];
 
+(* Integer ("index") view: DecodeIndex[n] is the closed term at enumeration
+   index n (an integer >= 0; DecodeIndex[0] is the smallest term), EncodeIndex
+   its inverse. Same map as DecodeBitString/EncodeLambdaTerm -- n is the
+   bijective-binary value of the bit string. *)
+DecodeIndex[n_Integer /; n >= 0] := DecodeIndex[n, Infinity];
+DecodeIndex[n_Integer /; n >= 0, cap_] :=
+  DecodeBitString[StringDrop[IntegerString[n + 1, 2], 1], cap];
+
+EncodeIndex[term_] := EncodeIndex[term, Infinity];
+EncodeIndex[term_, cap_] :=
+  With[{bits = EncodeLambdaTerm[term, cap]},
+    If[StringQ[bits], FromDigits["1" <> bits, 2] - 1, $Failed]];
+
 
 (* ::Section:: *)
 (*Self-test*)
@@ -410,6 +430,9 @@ LambdaBijectionSelfTest[] :=
         AllTrue[Range[0, 200],
           EncodeLambdaTerm[DecodeBitString[bitsForIndex[#], 3], 3] ===
             bitsForIndex[#] &],
+      "indexRoundTrip" ->
+        (AllTrue[Range[0, 200], EncodeIndex[DecodeIndex[#]] === # &] &&
+          DecodeIndex[0] === LambdaAbs[LambdaVar[1]]),
       "capAgreementOnSmallSizes" ->
         AllTrue[Range[0, ClosedTermCumulative[9] - 1],
           DecodeBitString[bitsForIndex[#]] ===

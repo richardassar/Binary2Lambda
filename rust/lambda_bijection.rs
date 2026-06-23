@@ -51,17 +51,22 @@ use std::fs;
 /// needs: addition, subtraction (no underflow), multiplication, divmod,
 /// comparison, and binary/hex string conversion.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-struct BigNat {
+pub struct BigNat {
     limbs: Vec<u64>,
 }
 
 impl BigNat {
-    fn from_u64(value: u64) -> BigNat {
+    pub fn from_u64(value: u64) -> BigNat {
         if value == 0 {
             BigNat::default()
         } else {
             BigNat { limbs: vec![value] }
         }
+    }
+
+    /// The low 64 bits as a word (the whole value when it fits in 64 bits).
+    pub fn to_u64(&self) -> u64 {
+        self.limbs.first().copied().unwrap_or(0)
     }
 
     fn is_zero(&self) -> bool {
@@ -697,6 +702,31 @@ pub fn decode(table: &mut Table, bits: &str) -> Result<Term, String> {
     Ok(unrank(table, rank, n, 0))
 }
 
+/// Integer ("index") view of the bijection: decode_index(n) is the closed term
+/// at enumeration index n (a natural number; decode_index of 0 is the smallest
+/// term), encode_index its inverse. Same map as the bit-string decode/encode -
+/// n is the bijective-binary value of the bit string. The _u64 variants are
+/// conveniences for indices that fit a word.
+pub fn decode_index(table: &mut Table, index: &BigNat) -> Result<Term, String> {
+    let mut next = index.clone();
+    next.add_assign(&BigNat::from_u64(1));
+    decode(table, &next.to_binary_string()[1..])
+}
+pub fn decode_index_u64(table: &mut Table, index: u64) -> Result<Term, String> {
+    decode_index(table, &BigNat::from_u64(index))
+}
+pub fn encode_index(table: &mut Table, term: &Term) -> Result<BigNat, String> {
+    let bits = encode(table, term)?;
+    Ok(BigNat::from_binary_string(&format!("1{bits}")).sub(&BigNat::from_u64(1)))
+}
+pub fn encode_index_u64(table: &mut Table, term: &Term) -> Result<u64, String> {
+    let index = encode_index(table, term)?;
+    if index.bit_length() > 64 {
+        return Err("index does not fit in u64".to_string());
+    }
+    Ok(index.to_u64())
+}
+
 // -------------------------------------------------------------- compression
 //
 // Lambda-specific compression of closed terms - the project's separate
@@ -932,7 +962,7 @@ fn decode_gamma(coder: &mut RangeDecoder) -> Result<u32, String> {
     Ok(v - 1)
 }
 
-fn encode_index(coder: &mut RangeEncoder, model: &mut AdaptiveModel, m: usize, index: usize) {
+fn encode_var_index(coder: &mut RangeEncoder, model: &mut AdaptiveModel, m: usize, index: usize) {
     let alphabet = m.min(INDEX_BUCKETS);
     let bucket = (index - 1).min(INDEX_BUCKETS - 1);
     encode_symbol(coder, &model.indices[..alphabet], bucket);
@@ -942,7 +972,7 @@ fn encode_index(coder: &mut RangeEncoder, model: &mut AdaptiveModel, m: usize, i
     model.saw_index(index);
 }
 
-fn decode_index(
+fn decode_var_index(
     coder: &mut RangeDecoder,
     model: &mut AdaptiveModel,
     m: usize,
@@ -968,7 +998,7 @@ fn walk_encode(term: &Term, m: usize, model: &mut AdaptiveModel, coder: &mut Ran
         Term::Var(index) => {
             encode_symbol(coder, &weights, KIND_VAR);
             model.saw_kind(m, KIND_VAR);
-            encode_index(coder, model, m, *index as usize);
+            encode_var_index(coder, model, m, *index as usize);
         }
         Term::Lam(body) => {
             encode_symbol(coder, &weights, KIND_LAM);
@@ -1009,7 +1039,7 @@ fn walk_decode(
     let kind = decode_symbol(coder, &weights)?;
     model.saw_kind(m, kind);
     if kind == KIND_VAR {
-        return Ok(Term::Var(decode_index(coder, model, m)? as u32));
+        return Ok(Term::Var(decode_var_index(coder, model, m)? as u32));
     }
     if kind == KIND_LAM {
         return Ok(Term::Lam(Box::new(walk_decode(m + 1, depth + 1, model, coder, budget)?)));
@@ -1137,6 +1167,19 @@ fn self_test() {
             let term = decode(&mut table, &bits).unwrap();
             assert_eq!(encode(&mut table, &term).unwrap(), bits, "round trip");
         }
+    }
+    {
+        // integer view: index -> term -> index
+        let mut idx = Table::new(None);
+        for number in 0..300u64 {
+            let term = decode_index_u64(&mut idx, number).unwrap();
+            assert_eq!(encode_index_u64(&mut idx, &term).unwrap(), number, "index rt");
+        }
+        assert_eq!(
+            decode_index_u64(&mut idx, 0).unwrap(),
+            Term::Lam(Box::new(Term::Var(1))),
+            "decode_index(0) must be lambda 1"
+        );
     }
     let mut unbounded = Table::new(None);
     let mut capped = Table::new(Some(8));

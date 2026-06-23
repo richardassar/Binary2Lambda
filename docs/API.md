@@ -287,6 +287,8 @@ index cap. `decode`/`encode` consume it and grow it on demand.
 |---|---|---|---|
 | decode (string → term) | `decode(table, bits) -> Term` | `decode(table, bits) -> TermPtr` | `decode(&mut table, &bits) -> Result<Term,String>` |
 | encode (term → string) | `encode(table, term) -> str` | `encode(table, term) -> string` | `encode(&mut table, &term) -> Result<String,String>` |
+| decode (index → term) | `decode_index(table, n) -> Term` | `decodeIndex(table, n) -> TermPtr` | `decode_index(&mut table, &n) -> Result<Term,String>` |
+| encode (term → index) | `encode_index(table, term) -> int` | `encodeIndex(table, term) -> BigNat` | `encode_index(&mut table, &term) -> Result<BigNat,String>` |
 
 - **`decode`** — maps a bit string to its closed term. Total over the chosen
   cap: every `{0,1}*` string is valid. The integer index is
@@ -298,6 +300,16 @@ index cap. `decode`/`encode` consume it and grow it on demand.
   whose largest index exceeds the table's cap (it is not in that bijection).
   `encode(table, decode(table, bits)) == bits` for every `bits`;
   `decode(table, encode(table, t)) == t` for every closed in-cap `t`.
+- **`decode_index` / `encode_index`** — the integer view of the same map:
+  `decode_index(N)` is the closed term at index `N >= 0` (so `decode_index(0)`
+  is `λ1`), and `encode_index` inverts it. `N` is the bijective-binary value of
+  the bit string, so `decode_index(N) == decode(table, b)` with `b` the
+  bits of `N`. Use it when the data are integers (fixed-width genomes,
+  Gödel-style IDs, uniform sampling) rather than variable-length bit strings.
+  `N` is arbitrary precision (`int` / `BigNat` / `Integer`); C++ and Rust add
+  `u64` conveniences (`decodeIndex(std::uint64_t)` and `encodeIndexU64`;
+  `decode_index_u64` and `encode_index_u64`). Wolfram has `DecodeIndex[n]` and
+  `EncodeIndex[term]`.
 
 ```python
 from lambda_bijection import Table, decode, encode, show_term
