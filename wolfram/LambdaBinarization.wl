@@ -100,6 +100,12 @@ EncodeLambdaTerm::overcap =
   "Term uses de Bruijn indices above the table cap `1`.";
 DecodeBitString::badbits = "`1` is not a string of 0s and 1s.";
 LoadLambdaTable::badfile = "`1` does not contain a saved lambda table.";
+(* Shared across every operation that takes a de Bruijn index cap. A cap is
+   valid only if it is a positive integer or Infinity (unbounded); any other
+   value names an empty or ill-defined language. Defined on General so each
+   function reports it under its own name. *)
+General::badcap =
+  "`1` is not a valid de Bruijn index cap (use a positive integer or Infinity).";
 
 
 (* ::Section:: *)
@@ -181,6 +187,12 @@ LambdaTermTree[LambdaApp[fun_, arg_]] :=
 
 
 (* ::Code:: *)
+(* A cap is valid iff it is Infinity (unbounded) or a positive integer. Every
+   public operation validates its cap through this; the pure count primitives
+   TermCount and ClosedTermCumulative instead report the true count, which is 0
+   for the empty language a sub-1 cap defines, and so terminate without a guard. *)
+validCapQ[cap_] := cap === Infinity || (IntegerQ[cap] && cap >= 1);
+
 effectiveContext[n_, m_, cap_] := Min[m, n - 1, cap];
 
 TermCount[n_, m_] := TermCount[n, m, Infinity];
@@ -205,10 +217,12 @@ ClearLambdaTable[] := (
 ClearLambdaTable[];
 
 BuildLambdaTable[sizeLimit_Integer] := BuildLambdaTable[sizeLimit, Infinity];
-BuildLambdaTable[sizeLimit_Integer, cap_] := (
-  Scan[TermCount[#, 0, cap] &, Range[2, sizeLimit]];
-  <|"sizeLimit" -> sizeLimit, "indexCap" -> cap,
-    "closedTermsUpToLimit" -> ClosedTermCumulative[sizeLimit, cap]|>);
+BuildLambdaTable[sizeLimit_Integer, cap_] :=
+  If[!validCapQ[cap],
+    Message[BuildLambdaTable::badcap, cap]; $Failed,
+    Scan[TermCount[#, 0, cap] &, Range[2, sizeLimit]];
+    <|"sizeLimit" -> sizeLimit, "indexCap" -> cap,
+      "closedTermsUpToLimit" -> ClosedTermCumulative[sizeLimit, cap]|>];
 
 
 (* ::Section:: *)
@@ -268,6 +282,7 @@ loadLamtab[path_] := Module[{bytes, end, pos, capKind, cap, size, nb, v},
     Message[LoadLambdaTable::badfile, path]; Return[$Failed]];
   capKind = bytes[[8]];
   cap = If[capKind == 0, Infinity, lamtabValue[bytes[[9 ;; 12]]]];
+  If[!validCapQ[cap], Message[LoadLambdaTable::badfile, path]; Return[$Failed]];
   size = lamtabValue[bytes[[13 ;; 16]]];
   pos = 17;
   Do[With[{keyCap = Min[cap, n - 1]},
@@ -282,6 +297,8 @@ loadLamtab[path_] := Module[{bytes, end, pos, capKind, cap, size, nb, v},
 
 SaveLambdaTable[path_String, size_Integer, cap_ : Infinity] :=
   Module[{ext = ToLowerCase[FileExtension[path]]},
+    If[!validCapQ[cap],
+      Message[SaveLambdaTable::badcap, cap]; Return[$Failed]];
     BuildLambdaTable[size, cap];
     Switch[ext,
       "lamtab", saveLamtab[path, size, cap],
@@ -297,7 +314,8 @@ LoadLambdaTable[path_String] :=
       "wxf", data = Import[path, "WXF"],
       "mx", (Get[path]; data = lambdaTableMx),
       _, Message[LoadLambdaTable::badext, ext]; Return[$Failed]];
-    If[!AssociationQ[data] || !KeyExistsQ[data, "rows"],
+    If[!AssociationQ[data] || !KeyExistsQ[data, "rows"] ||
+        !validCapQ[data["cap"]],
       Message[LoadLambdaTable::badfile, path]; Return[$Failed]];
     installSnapshot[data];
     <|"path" -> path, "size" -> data["size"], "indexCap" -> data["cap"]|>];
@@ -352,6 +370,8 @@ unrankApplication[rank_, n_, m_, cap_] :=
 EncodeLambdaTerm[term_] := EncodeLambdaTerm[term, Infinity];
 EncodeLambdaTerm[term_, cap_] :=
   Module[{n},
+    If[!validCapQ[cap],
+      Message[EncodeLambdaTerm::badcap, cap]; Return[$Failed]];
     If[!LambdaTermQ[term],
       Message[EncodeLambdaTerm::notterm, term]; Return[$Failed]];
     If[!closedTermQ[term, 0],
@@ -367,6 +387,8 @@ EncodeLambdaTerm[term_, cap_] :=
 DecodeBitString[bits_String] := DecodeBitString[bits, Infinity];
 DecodeBitString[bits_String, cap_] :=
   Module[{number, n},
+    If[!validCapQ[cap],
+      Message[DecodeBitString::badcap, cap]; Return[$Failed]];
     If[!StringMatchQ[bits, ("0" | "1") ...],
       Message[DecodeBitString::badbits, bits]; Return[$Failed]];
     number = FromDigits["1" <> bits, 2] - 1;
@@ -440,7 +462,12 @@ LambdaBijectionSelfTest[] :=
       "encodeRejectsNonClosed" ->
         AllTrue[{LambdaVar[1], LambdaAbs[LambdaVar[2]],
             LambdaApp[LambdaVar[1], LambdaVar[1]]},
-          Quiet[EncodeLambdaTerm[#]] === $Failed &]|>;
+          Quiet[EncodeLambdaTerm[#]] === $Failed &],
+      "rejectsBadCap" ->
+        AllTrue[{0, -1, 1.5},
+          Quiet[DecodeBitString["010", #]] === $Failed &&
+            Quiet[EncodeLambdaTerm[LambdaAbs[LambdaVar[1]], #]] === $Failed &&
+            Quiet[BuildLambdaTable[8, #]] === $Failed &]|>;
     savedValue = TermCount[14, 0];
     results["saveAndLoad"] = AllTrue[{"lamtab", "wxf", "mx"}, Function[ext,
       tempPath = FileNameJoin[{$TemporaryDirectory,

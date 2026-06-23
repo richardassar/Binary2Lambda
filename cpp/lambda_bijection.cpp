@@ -1155,6 +1155,14 @@ void selfTest() {
       require(observed.count(n, 0) == fresh.count(n, 0),
               "cap change " + std::to_string(from) + " n=" + std::to_string(n));
   }
+  // an index cap below 1 names the empty language; both the constructor and
+  // setIndexCap must reject it rather than build a degenerate table
+  for (const int badCap : {0, -1}) {
+    require(throwsException([&] { Table bad(badCap); }),
+            "Table rejects cap " + std::to_string(badCap));
+    require(throwsException([&] { Table ok(2); ok.setIndexCap(badCap); }),
+            "setIndexCap rejects cap " + std::to_string(badCap));
+  }
   for (const std::optional<int> cap : {std::optional<int>(5), std::optional<int>()}) {
     Table saved(cap);
     saved.extend(40);

@@ -1609,4 +1609,19 @@ mod tests {
     fn self_test_passes() {
         super::self_test();
     }
+
+    // An index cap below 1 names the empty language; both the constructor and
+    // set_index_cap must reject it rather than build a degenerate table.
+    #[test]
+    #[should_panic(expected = "index cap must be at least 1")]
+    fn new_rejects_cap_below_one() {
+        let _ = super::Table::new(Some(0));
+    }
+
+    #[test]
+    #[should_panic(expected = "index cap must be at least 1")]
+    fn set_index_cap_rejects_cap_below_one() {
+        let mut table = super::Table::new(Some(2));
+        table.set_index_cap(Some(0));
+    }
 }

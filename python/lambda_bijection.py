@@ -159,6 +159,20 @@ def _fnv1a64_update(h: int, data: bytes) -> int:
 # --------------------------------------------------------------------- table
 
 
+def _check_index_cap(index_cap: Optional[int]) -> None:
+    """A de Bruijn index cap is None (unbounded) or a positive integer; any
+    other value names an empty or ill-defined language. bool is rejected even
+    though it is an int subclass."""
+    if index_cap is None:
+        return
+    if (
+        isinstance(index_cap, bool)
+        or not isinstance(index_cap, int)
+        or index_cap < 1
+    ):
+        raise ValueError("index_cap must be a positive integer or None")
+
+
 class Table:
     """Counting table T(n, m): closed-context term counts, both axes growable.
 
@@ -169,8 +183,7 @@ class Table:
     """
 
     def __init__(self, index_cap: Optional[int] = None):
-        if index_cap is not None and index_cap < 1:
-            raise ValueError("index_cap must be at least 1 (or None)")
+        _check_index_cap(index_cap)
         self.index_cap = index_cap
         self._rows: list[list[int]] = [[], []]  # rows for n = 0, 1 are empty
         self._cum: list[int] = [0, 0]           # closed terms of size <= n
@@ -194,8 +207,7 @@ class Table:
         Rows of size n are identical under caps K and K' whenever
         n - 1 <= min(K, K'); those are kept, the rest are rebuilt.
         """
-        if new_cap is not None and new_cap < 1:
-            raise ValueError("index_cap must be at least 1 (or None)")
+        _check_index_cap(new_cap)
         if new_cap == self.index_cap:
             return
         finite = [c for c in (self.index_cap, new_cap) if c is not None]
@@ -537,6 +549,21 @@ def _self_test() -> None:
         raise AssertionError("encode accepted an over-cap term")
     except ValueError:
         pass
+
+    # an index cap must be None or a positive integer, rejected at construction
+    # and at set_index_cap (a sub-1 cap names the empty language; a non-integer
+    # cap is meaningless)
+    for bad_cap in (0, -1, 1.5, True, False):
+        try:
+            Table(index_cap=bad_cap)
+            raise AssertionError(f"Table accepted index_cap={bad_cap!r}")
+        except ValueError:
+            pass
+        try:
+            Table(index_cap=2).set_index_cap(bad_cap)
+            raise AssertionError(f"set_index_cap accepted {bad_cap!r}")
+        except ValueError:
+            pass
 
     # save / load round trip (capped and unbounded) and corruption rejection
     import os
